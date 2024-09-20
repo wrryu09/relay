@@ -25,7 +25,7 @@ const NewsfeedQuery = graphql`
           url
         }
       }
-      image {
+      thumbnail {
         url
       }
     }
@@ -33,7 +33,7 @@ const NewsfeedQuery = graphql`
 `;
 ```
 
-Now we've updated the query, we need to run the relay compiler so that it knows about the updated Graphql query by running `npm run relay`.
+Now we've updated the query, we need to run the Relay compiler so that it knows about the updated Graphql query by running `npm run relay`.
 
 Next, go to `Story.tsx` and modify it to display the date:
 
@@ -56,7 +56,7 @@ export default function Story({story}: Props) {
       <Heading>{story.title}</Heading>
       // change-line
       <Timestamp time={story.createdAt} /> // Add this line
-      <Image image={story.image} />
+      <Image image={story.thumbnail} />
       <StorySummary summary={story.summary} />
     </Card>
   );
@@ -146,7 +146,7 @@ export default function Story({story}: Props) {
       <Heading>{data.title}</Heading>
       <PosterByline poster={data.poster} />
       <Timestamp time={data.createdAt} />
-      <Image image={data.image} />
+      <Image image={data.thumbnail} />
       <StorySummary summary={data.summary} />
     </Card>
   );
@@ -442,7 +442,7 @@ const StoryFragment = graphql`
     poster {
       ...PosterBylineFragment
     }
-    image {
+    thumbnail {
       // change-line
       ...ImageFragment @arguments(width: 400)
     }
@@ -476,7 +476,7 @@ Field arguments (e.g. `url(height: 100)`) are a feature of GraphQL itself, while
 
 ## Summary
 
-Fragments are the most distinctive aspect of how Relay uses GraphQL. We recommend that every component that displays data and cares about the semantics of that data (so not just a typographic or formatting component) use a GraphQL fragment to declare its data dependences.
+Fragments are the most distinctive aspect of how Relay uses GraphQL. We recommend that every component that displays data and cares about the semantics of that data (so not just a typographic or formatting component) use a GraphQL fragment to declare its data dependencies.
 
 * Fragments help you scale: No matter how many places a component is used, you can update its data dependencies in a single place.
 * Fragment data needs to be read out with `useFragment`.

@@ -35,6 +35,7 @@ use schema::SDLSchema;
 use schema_diff::check::SchemaChangeSafety;
 use schema_diff::definitions::SchemaChange;
 use schema_diff::detect_changes;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use zstd::stream::read::Decoder as ZstdDecoder;
@@ -58,7 +59,7 @@ use crate::file_source::LocatedJavascriptSourceFeatures;
 use crate::file_source::SourceControlUpdateStatus;
 
 /// Set of project names.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
 #[serde(from = "DeserializableProjectSet")]
 pub struct ProjectSet(Vec<ProjectName>);
 
@@ -79,6 +80,10 @@ impl ProjectSet {
         existing_names.push(project_name);
     }
 
+    pub fn extend_iter(&mut self, other: impl Iterator<Item = ProjectName>) {
+        self.0.extend(other);
+    }
+
     pub fn iter(&self) -> slice::Iter<'_, ProjectName> {
         self.0.iter()
     }
@@ -89,6 +94,10 @@ impl ProjectSet {
 
     pub fn first(&self) -> Option<&ProjectName> {
         self.0.first()
+    }
+
+    pub fn sort(&mut self) {
+        self.0.sort();
     }
 }
 
@@ -119,7 +128,7 @@ impl fmt::Display for ProjectSet {
 // want our actual `ProjectSet` object to be modeled as a single Vec internally.
 // So, we provide this enum to use sede's polymorphic deserialization and then
 // tell `ProjectSet` to deserialize via this enum using `From`.
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, JsonSchema)]
 #[serde(untagged)]
 pub enum DeserializableProjectSet {
     ProjectName(ProjectName),

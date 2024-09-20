@@ -7,6 +7,8 @@
 
 use std::sync::Arc;
 
+use ::intern::string_key::Intern;
+use ::intern::string_key::StringKey;
 use common::ArgumentName;
 use common::Diagnostic;
 use common::DiagnosticsResult;
@@ -20,8 +22,7 @@ use graphql_ir::ScalarField;
 use graphql_ir::Selection;
 use graphql_ir::Transformed;
 use graphql_ir::Transformer;
-use intern::string_key::Intern;
-use intern::string_key::StringKey;
+use intern::intern;
 use lazy_static::lazy_static;
 mod catchable_field;
 mod validation_message;
@@ -34,10 +35,10 @@ use crate::catch_directive::validation_message::ValidationMessage;
 use crate::REQUIRED_DIRECTIVE_NAME;
 
 lazy_static! {
-    pub static ref CATCH_DIRECTIVE_NAME: DirectiveName = DirectiveName("catch".intern());
-    pub static ref NULL_TO: StringKey = "NULL".intern();
-    pub static ref RESULT_TO: StringKey = "RESULT".intern();
-    pub static ref TO_ARGUMENT: ArgumentName = ArgumentName("to".intern());
+    pub static ref CATCH_DIRECTIVE_NAME: DirectiveName = DirectiveName(intern!("catch"));
+    pub static ref NULL_TO: StringKey = intern!("NULL");
+    pub static ref RESULT_TO: StringKey = intern!("RESULT");
+    pub static ref TO_ARGUMENT: ArgumentName = ArgumentName(intern!("to"));
 }
 
 // Possible @catch `to` enum values ordered by severity.
@@ -65,6 +66,7 @@ impl From<CatchTo> for StringKey {
         }
     }
 }
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CatchMetadataDirective {
     pub to: CatchTo,
@@ -72,8 +74,16 @@ pub struct CatchMetadataDirective {
 }
 associated_data_impl!(CatchMetadataDirective);
 
-pub fn catch_directive(program: &Program, enabled: bool) -> DiagnosticsResult<Program> {
-    let mut transform = CatchDirective::new(program, enabled);
+pub fn catch_to_with_fallback(catch_to: Option<CatchTo>) -> CatchTo {
+    match catch_to {
+        Some(to) => to,
+        // @catch without an argument is always RESULT
+        None => CatchTo::Result,
+    }
+}
+
+pub fn catch_directive(program: &Program) -> DiagnosticsResult<Program> {
+    let mut transform = CatchDirective::new(program);
 
     let next_program = transform
         .transform_program(program)
@@ -90,26 +100,15 @@ struct CatchDirective<'s> {
     #[allow(dead_code)]
     program: &'s Program,
     errors: Vec<Diagnostic>,
-    enabled: bool,
     path: Vec<&'s str>,
 }
 
 impl<'program> CatchDirective<'program> {
-    fn new(program: &'program Program, enabled: bool) -> Self {
+    fn new(program: &'program Program) -> Self {
         Self {
             program,
             errors: Default::default(),
-            enabled,
             path: vec![],
-        }
-    }
-
-    fn report_unimplemented(&mut self, directives: &[Directive]) {
-        if let Some(directive) = directives.named(*CATCH_DIRECTIVE_NAME) {
-            self.errors.push(Diagnostic::error(
-                ValidationMessage::CatchDirectiveNotImplemented,
-                directive.name.location,
-            ));
         }
     }
 
@@ -145,10 +144,6 @@ impl<'s> Transformer for CatchDirective<'s> {
     const VISIT_DIRECTIVES: bool = false;
 
     fn transform_scalar_field(&mut self, field: &ScalarField) -> Transformed<Selection> {
-        if !self.enabled {
-            self.report_unimplemented(&field.directives);
-        }
-
         let name = field.alias_or_name(&self.program.schema).lookup();
         self.path.push(name);
         let path_name: StringKey = self.path.join(".").intern();
@@ -170,10 +165,6 @@ impl<'s> Transformer for CatchDirective<'s> {
     }
 
     fn transform_linked_field(&mut self, field: &LinkedField) -> Transformed<Selection> {
-        if !self.enabled {
-            self.report_unimplemented(&field.directives);
-        }
-
         let name = field.alias_or_name(&self.program.schema).lookup();
         self.path.push(name);
 
@@ -214,13 +205,13 @@ impl<'s> Transformer for CatchDirective<'s> {
 fn add_metadata_directive(
     directives: &[Directive],
     path_name: StringKey,
-    to: CatchTo,
+    to: Option<CatchTo>,
 ) -> Vec<Directive> {
     let mut next_directives: Vec<Directive> = Vec::with_capacity(directives.len() + 1);
     next_directives.extend(directives.iter().cloned());
     next_directives.push(
         CatchMetadataDirective {
-            to,
+            to: catch_to_with_fallback(to),
             path: path_name,
         }
         .into(),

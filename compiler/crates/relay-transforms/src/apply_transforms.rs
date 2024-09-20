@@ -14,6 +14,7 @@ use common::PerfLogger;
 use graphql_ir::FragmentDefinitionNameSet;
 use graphql_ir::Program;
 use relay_config::ProjectConfig;
+use validate_operation_variables::ValidateVariablesOptions;
 
 use super::*;
 use crate::apply_custom_transforms::apply_after_custom_transforms;
@@ -155,6 +156,17 @@ fn apply_common_transforms(
         &log_event,
         None,
     )?;
+
+    program = log_event.time("fragment_alias_directive", || {
+        fragment_alias_directive(
+            &program,
+            project_config
+                .feature_flags
+                .enforce_fragment_alias_where_ambiguous
+                .is_fully_enabled(),
+        )
+    })?;
+
     program = log_event.time("relay_resolvers_abstract_types", || {
         relay_resolvers_abstract_types(&program, &project_config.feature_flags)
     })?;
@@ -250,33 +262,9 @@ fn apply_reader_transforms(
         None,
     )?;
 
-    program = log_event.time("fragment_alias_directive", || {
-        fragment_alias_directive(
-            &program,
-            project_config
-                .feature_flags
-                .enable_fragment_aliases
-                .is_fully_enabled(),
-            // NOTE: We purposefully don't run validation in this arm of the
-            // transform pipeline, and instead we expect it to run in the
-            // typegen arm. In this arm we've already run refetchable fragment
-            // transform which creates some synthentic fragment spreads that we
-            // don't want to report.
-            false,
-        )
-    })?;
-
     program = log_event.time("required_directive", || required_directive(&program))?;
 
-    program = log_event.time("catch_directive", || {
-        catch_directive(
-            &program,
-            project_config
-                .feature_flags
-                .enable_catch_directive_transform
-                .is_fully_enabled(),
-        )
-    })?;
+    program = log_event.time("catch_directive", || catch_directive(&program))?;
 
     program = log_event.time("client_edges", || {
         client_edges(&program, project_config, &base_fragment_names)
@@ -361,6 +349,10 @@ fn apply_operation_transforms(
         None,
     )?;
 
+    program = log_event.time("remove_aliased_inline_fragments", || {
+        remove_aliased_inline_fragments(&program)
+    });
+
     program = log_event.time("skip_updatable_queries", || {
         skip_updatable_queries(&program)
     });
@@ -392,6 +384,7 @@ fn apply_operation_transforms(
         transform_declarative_connection(
             &program,
             &project_config.schema_config.connection_interface,
+            &project_config.feature_flags,
         )
     })?;
 
@@ -616,7 +609,12 @@ fn apply_operation_text_transforms(
     program = log_event.time("generate_typename", || generate_typename(&program, false));
     log_event.time("flatten", || flatten(&mut program, false, true))?;
     program = log_event.time("validate_operation_variables", || {
-        validate_operation_variables(&program)
+        validate_operation_variables(
+            &program,
+            ValidateVariablesOptions {
+                remove_unused_variables: true,
+            },
+        )
     })?;
     program = log_event.time("skip_client_directives", || {
         skip_client_directives(&program)
@@ -670,10 +668,6 @@ fn apply_typegen_transforms(
             &program,
             project_config
                 .feature_flags
-                .enable_fragment_aliases
-                .is_fully_enabled(),
-            project_config
-                .feature_flags
                 .enforce_fragment_alias_where_ambiguous
                 .is_fully_enabled(),
         )
@@ -692,15 +686,7 @@ fn apply_typegen_transforms(
         transform_subscriptions(&program)
     })?;
     program = log_event.time("required_directive", || required_directive(&program))?;
-    program = log_event.time("catch_directive", || {
-        catch_directive(
-            &program,
-            project_config
-                .feature_flags
-                .enable_catch_directive_transform
-                .is_fully_enabled(),
-        )
-    })?;
+    program = log_event.time("catch_directive", || catch_directive(&program))?;
     program = log_event.time("generate_relay_resolvers_model_fragments", || {
         generate_relay_resolvers_model_fragments(
             project_config.name,

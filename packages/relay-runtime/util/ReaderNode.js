@@ -14,19 +14,12 @@
 import type {ConnectionMetadata} from '../handlers/connection/ConnectionHandler';
 import type {NormalizationSelectableNode} from './NormalizationNode';
 import type {ConcreteRequest} from './RelayConcreteNode';
+import type {JSResourceReference} from 'JSResourceReference';
 
 export type ReaderFragmentSpread = {
   +kind: 'FragmentSpread',
   +name: string,
   +args?: ?$ReadOnlyArray<ReaderArgument>,
-};
-
-export type ReaderAliasedFragmentSpread = {
-  +kind: 'AliasedFragmentSpread',
-  +name: string,
-  +type: string,
-  +abstractKey?: ?string,
-  +fragment: ReaderFragmentSpread,
 };
 
 export type ReaderInlineDataFragmentSpread = {
@@ -177,6 +170,10 @@ export type ReaderModuleImport = {
   +documentName: string,
   +fragmentPropName: string,
   +fragmentName: string,
+  +componentModuleProvider?: () =>
+    | mixed
+    | Promise<mixed>
+    | JSResourceReference<mixed>,
 };
 
 export type ReaderListValueArgument = {
@@ -324,7 +321,6 @@ export type ReaderSelection =
   | ReaderField
   | ReaderActorChange
   | ReaderFragmentSpread
-  | ReaderAliasedFragmentSpread
   | ReaderInlineDataFragmentSpread
   | ReaderAliasedInlineFragmentSpread
   | ReaderInlineFragment

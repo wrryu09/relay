@@ -17,10 +17,10 @@ import type {
   EnvironmentProviderOptions,
   IEnvironmentProvider,
   PreloadedEntryPoint,
+  PreloadedQuery,
 } from './EntryPointTypes.flow';
 
 const loadEntryPoint = require('./loadEntryPoint');
-const {useTrackLoadQueryInRender} = require('./loadQuery');
 const useIsMountedRef = require('./useIsMountedRef');
 const {useCallback, useEffect, useRef, useState} = require('react');
 
@@ -52,7 +52,8 @@ const initialNullEntryPointReferenceState = {kind: 'NullEntryPointReference'};
 
 hook useLoadEntryPoint<
   TEntryPointParams: {...},
-  TPreloadedQueries: {...},
+  // $FlowExpectedError[unclear-type] Need any to make it supertype of all PreloadedQuery
+  TPreloadedQueries: {+[string]: PreloadedQuery<any>},
   TPreloadedEntryPoints: {...},
   TRuntimeProps: {...},
   TExtraProps,
@@ -101,8 +102,6 @@ hook useLoadEntryPoint<
    * Finally, when the hook unmounts, we also dispose of all remaining uncommitted
    * entry point references.
    */
-
-  useTrackLoadQueryInRender();
 
   const initialEntryPointReferenceInternal =
     options?.TEST_ONLY__initialEntryPointData?.entryPointReference ??

@@ -50,15 +50,15 @@ pub struct FragmentAliasMetadata {
     pub type_condition: Option<Type>,
     pub non_nullable: bool,
     pub selection_type: Type,
+    pub wraps_spread: bool,
 }
 associated_data_impl!(FragmentAliasMetadata);
 
 pub fn fragment_alias_directive(
     program: &Program,
-    is_enabled: bool,
     is_enforced: bool,
 ) -> DiagnosticsResult<Program> {
-    let mut transform = FragmentAliasTransform::new(program, is_enabled, is_enforced);
+    let mut transform = FragmentAliasTransform::new(program, is_enforced);
     let next_program = transform
         .transform_program(program)
         .replace_or_else(|| program.clone());
@@ -69,9 +69,56 @@ pub fn fragment_alias_directive(
     }
 }
 
+pub fn remove_aliased_inline_fragments(program: &Program) -> Program {
+    let mut transform = AliasedInlineFragmentRemovalTransform {};
+    transform
+        .transform_program(program)
+        .replace_or_else(|| program.clone())
+}
+
+struct AliasedInlineFragmentRemovalTransform {}
+
+impl Transformer for AliasedInlineFragmentRemovalTransform {
+    const NAME: &'static str = "AliasedInlineFragmentRemovalTransform";
+    const VISIT_ARGUMENTS: bool = false;
+    const VISIT_DIRECTIVES: bool = false;
+
+    fn transform_inline_fragment(&mut self, fragment: &InlineFragment) -> Transformed<Selection> {
+        if let Some(metadata) = FragmentAliasMetadata::find(&fragment.directives) {
+            let selections = self
+                .transform_selections(&fragment.selections)
+                .replace_or_else(|| fragment.selections.clone());
+            if metadata.wraps_spread {
+                if selections.len() != 1 {
+                    panic!(
+                        "Expected exactly one selection in an aliased inline fragment wrapping a spread. This is a bug in Relay."
+                    );
+                }
+                Transformed::Replace(selections[0].clone())
+            } else {
+                let directives = fragment
+                    .directives
+                    .iter()
+                    .filter(|directive| {
+                        directive.name.item != FragmentAliasMetadata::directive_name()
+                    })
+                    .cloned()
+                    .collect();
+                Transformed::Replace(Selection::InlineFragment(Arc::new(InlineFragment {
+                    directives,
+                    type_condition: fragment.type_condition,
+                    selections,
+                    spread_location: fragment.spread_location,
+                })))
+            }
+        } else {
+            self.default_transform_inline_fragment(fragment)
+        }
+    }
+}
+
 struct FragmentAliasTransform<'program> {
     program: &'program Program,
-    is_enabled: bool,
     is_enforced: bool,
     document_name: Option<StringKey>,
     parent_type: Option<Type>,
@@ -81,10 +128,9 @@ struct FragmentAliasTransform<'program> {
 }
 
 impl<'program> FragmentAliasTransform<'program> {
-    fn new(program: &'program Program, enabled: bool, enforced: bool) -> Self {
+    fn new(program: &'program Program, enforced: bool) -> Self {
         Self {
             program,
-            is_enabled: enabled,
             is_enforced: enforced,
             document_name: None,
             parent_type: None,
@@ -212,11 +258,10 @@ impl Transformer for FragmentAliasTransform<'_> {
     }
 
     fn transform_condition(&mut self, condition: &Condition) -> Transformed<Selection> {
-        self.maybe_condition = Some(condition.clone());
-        let selections = transform_list(&condition.selections, |selection| {
-            self.transform_selection(selection)
-        });
-        self.maybe_condition = None;
+        let parent_condition =
+            std::mem::replace(&mut self.maybe_condition, Some(condition.clone()));
+        let selections = self.transform_selections(&condition.selections);
+        self.maybe_condition = parent_condition;
         if let TransformedValue::Replace(selections) = &selections {
             if !Self::RETAIN_EMPTY_SELECTION_SETS && selections.is_empty() {
                 return Transformed::Delete;
@@ -238,7 +283,6 @@ impl Transformer for FragmentAliasTransform<'_> {
         &mut self,
         selections: &[Selection],
     ) -> TransformedValue<Vec<Selection>> {
-        self.maybe_condition = None;
         transform_list(selections, |selection| self.transform_selection(selection))
     }
 
@@ -251,14 +295,6 @@ impl Transformer for FragmentAliasTransform<'_> {
 
         let transformed = match fragment.alias(&self.program.schema) {
             Ok(Some(alias)) => {
-                if !self.is_enabled {
-                    self.errors.push(Diagnostic::error(
-                        ValidationMessage::FragmentAliasDirectiveDisabled,
-                        alias.location,
-                    ));
-                    self.default_transform_inline_fragment(fragment);
-                }
-
                 // Note: This must be called before we set self.parent_type
                 let will_always_match = self.will_always_match(fragment.type_condition);
 
@@ -273,17 +309,26 @@ impl Transformer for FragmentAliasTransform<'_> {
                     selection_type: self
                         .parent_type
                         .expect("Selection should be within a parent type."),
+                    wraps_spread: false,
                 };
 
                 let mut directives = fragment.directives.clone();
                 directives.push(alias_metadata.into());
 
+                // An aliased inline fragment creates its own name, and so we can reset any
+                // conditionality created by `@skip` or `@include` directives.
+                let parent_maybe_condition = self.maybe_condition.take();
+
+                let selections = self
+                    .transform_selections(&fragment.selections)
+                    .replace_or_else(|| fragment.selections.clone());
+
+                self.maybe_condition = parent_maybe_condition;
+
                 Transformed::Replace(Selection::InlineFragment(Arc::new(InlineFragment {
                     directives,
                     type_condition: fragment.type_condition,
-                    selections: self
-                        .transform_selections(&fragment.selections)
-                        .replace_or_else(|| fragment.selections.clone()),
+                    selections,
                     spread_location: fragment.spread_location,
                 })))
             }
@@ -321,13 +366,6 @@ impl Transformer for FragmentAliasTransform<'_> {
 
         match spread.alias() {
             Ok(Some(alias)) => {
-                if !self.is_enabled {
-                    self.errors.push(Diagnostic::error(
-                        ValidationMessage::FragmentAliasDirectiveDisabled,
-                        alias.location,
-                    ));
-                }
-
                 let is_plural = RelayDirective::find(&fragment.directives)
                     .map_or(false, |directive| directive.plural);
 
@@ -345,15 +383,14 @@ impl Transformer for FragmentAliasTransform<'_> {
                     selection_type: self
                         .parent_type
                         .expect("Selection should be within a parent type."),
+                    wraps_spread: true,
                 };
 
-                let mut directives = spread.directives.clone();
-                directives.push(alias_metadata.into());
-
-                Transformed::Replace(Selection::FragmentSpread(Arc::new(FragmentSpread {
-                    fragment: spread.fragment,
-                    arguments: spread.arguments.clone(),
-                    directives,
+                Transformed::Replace(Selection::InlineFragment(Arc::new(InlineFragment {
+                    type_condition,
+                    selections: vec![Selection::FragmentSpread(Arc::new(spread.clone()))],
+                    directives: vec![alias_metadata.into()],
+                    spread_location: alias.location,
                 })))
             }
             Ok(None) => {
@@ -368,6 +405,9 @@ impl Transformer for FragmentAliasTransform<'_> {
     }
     fn transform_linked_field(&mut self, field: &LinkedField) -> Transformed<Selection> {
         let previous_parent_type = self.parent_type;
+        // Linked fields create a new namespace. Any conditionality created by `@skip` or `@include`
+        // does not apply to the selections within the linked field.
+        let parent_condition = self.maybe_condition.take();
 
         self.parent_type = Some(
             self.program
@@ -379,6 +419,7 @@ impl Transformer for FragmentAliasTransform<'_> {
 
         let transformed = self.default_transform_linked_field(field);
 
+        self.maybe_condition = parent_condition;
         self.parent_type = previous_parent_type;
 
         transformed

@@ -11,6 +11,7 @@
 
 'use strict';
 
+import type {TRelayFieldError} from '../store/RelayErrorTrie';
 import type {
   ErrorResponseFields,
   IEnvironment,
@@ -18,8 +19,93 @@ import type {
   RelayResolverErrors,
 } from '../store/RelayStoreTypes';
 
-import {RelayFieldError} from '../store/RelayErrorTrie';
-import RelayFeatureFlags from './RelayFeatureFlags';
+const {RelayFieldError} = require('../store/RelayErrorTrie');
+const RelayFeatureFlags = require('./RelayFeatureFlags');
+
+function handleResolverErrors(
+  environment: IEnvironment,
+  relayResolverErrors: RelayResolverErrors,
+  throwOnFieldError: boolean,
+) {
+  for (const resolverError of relayResolverErrors) {
+    environment.relayFieldLogger(resolverError);
+  }
+
+  if (
+    RelayFeatureFlags.ENABLE_FIELD_ERROR_HANDLING_THROW_BY_DEFAULT ||
+    throwOnFieldError
+  ) {
+    throw new RelayFieldError(
+      `Relay: Unexpected resolver exception`,
+      relayResolverErrors.map(e => ({message: e.error.message})),
+    );
+  }
+}
+
+function handleFieldErrors(
+  environment: IEnvironment,
+  errorResponseFields: ErrorResponseFields,
+  shouldThrow: boolean,
+) {
+  for (const fieldError of errorResponseFields) {
+    // First we log all events. Note that the logger may opt to throw its own
+    // error here if it wants to throw an error that is better integrated into
+    // site's error handling infrastructure.
+    environment.relayFieldLogger(fieldError);
+  }
+
+  // when a user adds the throwOnFieldError flag, they opt into also throwing on missing fields.
+  if (shouldThrow) {
+    throw new RelayFieldError(
+      `Relay: Unexpected response payload - this object includes an errors property in which you can access the underlying errors`,
+      errorResponseFields.map((event): TRelayFieldError => {
+        switch (event.kind) {
+          case 'relay_field_payload.error':
+            return event.error;
+          case 'missing_expected_data.throw':
+            return {message: 'Missing expected data'};
+          case 'missing_expected_data.log':
+            return {message: 'Missing expected data'};
+          default:
+            (event.kind: empty);
+            throw new Error('Relay: Unexpected event kind');
+        }
+      }),
+    );
+  }
+}
+
+function handleMissingRequiredFields(
+  environment: IEnvironment,
+  missingRequiredFields: MissingRequiredFields,
+) {
+  switch (missingRequiredFields.action) {
+    case 'THROW': {
+      const {path, owner} = missingRequiredFields.field;
+      // This gives the consumer the chance to throw their own error if they so wish.
+      environment.relayFieldLogger({
+        kind: 'missing_required_field.throw',
+        owner,
+        fieldPath: path,
+      });
+      throw new Error(
+        `Relay: Missing @required value at path '${path}' in '${owner}'.`,
+      );
+    }
+    case 'LOG':
+      missingRequiredFields.fields.forEach(({path, owner}) => {
+        environment.relayFieldLogger({
+          kind: 'missing_required_field.log',
+          owner,
+          fieldPath: path,
+        });
+      });
+      break;
+    default: {
+      (missingRequiredFields.action: empty);
+    }
+  }
+}
 
 function handlePotentialSnapshotErrors(
   environment: IEnvironment,
@@ -28,81 +114,20 @@ function handlePotentialSnapshotErrors(
   errorResponseFields: ?ErrorResponseFields,
   throwOnFieldError: boolean,
 ) {
-  for (const resolverError of relayResolverErrors) {
-    environment.relayFieldLogger({
-      kind: 'relay_resolver.error',
-      owner: resolverError.field.owner,
-      fieldPath: resolverError.field.path,
-      error: resolverError.error,
-    });
-  }
-
-  if (
-    relayResolverErrors.length > 0 &&
-    (RelayFeatureFlags.ENABLE_FIELD_ERROR_HANDLING_THROW_BY_DEFAULT ||
-      throwOnFieldError)
-  ) {
-    throw new RelayFieldError(
-      `Relay: Unexpected resolver exception`,
-      relayResolverErrors.map(e => ({message: e.error.message})),
-    );
-  }
-
-  if (
-    (RelayFeatureFlags.ENABLE_FIELD_ERROR_HANDLING || throwOnFieldError) &&
-    errorResponseFields != null
-  ) {
-    if (errorResponseFields != null) {
-      for (const fieldError of errorResponseFields) {
-        const {path, owner, error} = fieldError;
-
-        environment.relayFieldLogger({
-          kind: 'relay_field_payload.error',
-          owner: owner,
-          fieldPath: path,
-          error,
-        });
-      }
-    }
-
-    if (
-      RelayFeatureFlags.ENABLE_FIELD_ERROR_HANDLING_THROW_BY_DEFAULT ||
-      throwOnFieldError
-    ) {
-      throw new RelayFieldError(
-        `Relay: Unexpected response payload - this object includes an errors property in which you can access the underlying errors`,
-        errorResponseFields.map(({error}) => error),
-      );
-    }
+  if (relayResolverErrors.length > 0) {
+    handleResolverErrors(environment, relayResolverErrors, throwOnFieldError);
   }
 
   if (missingRequiredFields != null) {
-    switch (missingRequiredFields.action) {
-      case 'THROW': {
-        const {path, owner} = missingRequiredFields.field;
-        // This gives the consumer the chance to throw their own error if they so wish.
-        environment.relayFieldLogger({
-          kind: 'missing_field.throw',
-          owner,
-          fieldPath: path,
-        });
-        throw new Error(
-          `Relay: Missing @required value at path '${path}' in '${owner}'.`,
-        );
-      }
-      case 'LOG':
-        missingRequiredFields.fields.forEach(({path, owner}) => {
-          environment.relayFieldLogger({
-            kind: 'missing_field.log',
-            owner,
-            fieldPath: path,
-          });
-        });
-        break;
-      default: {
-        (missingRequiredFields.action: empty);
-      }
-    }
+    handleMissingRequiredFields(environment, missingRequiredFields);
+  }
+
+  /**
+   * Inside handleFieldErrors, we check for throwOnFieldError - but this fn logs the error anyway by default
+   * which is why this still should run in any case there's errors.
+   */
+  if (errorResponseFields != null) {
+    handleFieldErrors(environment, errorResponseFields, throwOnFieldError);
   }
 }
 

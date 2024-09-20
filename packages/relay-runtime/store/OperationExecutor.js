@@ -375,16 +375,18 @@ class Executor<TMutation: MutationParameters> {
   // Handle a raw GraphQL response.
   _next(_id: number, response: GraphQLResponse): void {
     this._schedule(() => {
-      const [start, duration] = withStartAndDuration(() => {
-        this._handleNext(response);
-        this._maybeCompleteSubscriptionOperationTracking();
-      });
       this._log({
-        name: 'execute.next',
+        name: 'execute.next.start',
         executeId: this._executeId,
         response,
-        duration,
-        start,
+        operation: this._operation,
+      });
+      this._handleNext(response);
+      this._maybeCompleteSubscriptionOperationTracking();
+      this._log({
+        name: 'execute.next.end',
+        executeId: this._executeId,
+        response,
         operation: this._operation,
       });
     });
@@ -771,6 +773,10 @@ class Executor<TMutation: MutationParameters> {
   _processResponses(
     responses: $ReadOnlyArray<GraphQLResponseWithData>,
   ): $ReadOnlyArray<RelayResponsePayload> {
+    this._log({
+      name: 'execute.normalize.start',
+      operation: this._operation,
+    });
     if (this._optimisticUpdates !== null) {
       this._optimisticUpdates.forEach(update => {
         this._getPublishQueueAndSaveActor().revertUpdate(update);
@@ -799,7 +805,10 @@ class Executor<TMutation: MutationParameters> {
         relayPayload,
         this._updater,
       );
-
+      this._log({
+        name: 'execute.normalize.end',
+        operation: this._operation,
+      });
       return relayPayload;
     });
   }

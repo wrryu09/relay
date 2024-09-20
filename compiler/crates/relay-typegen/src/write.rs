@@ -24,6 +24,7 @@ use graphql_ir::Selection;
 use indexmap::IndexMap;
 use itertools::Itertools;
 use lazy_static::lazy_static;
+use relay_config::CustomTypeImport;
 use relay_config::JsModuleFormat;
 use relay_config::TypegenLanguage;
 use relay_transforms::RefetchableDerivedFromMetadata;
@@ -93,6 +94,7 @@ pub(crate) fn write_operation_type_exports_section(
     let mut imported_resolvers = Default::default();
     let mut actor_change_status = ActorChangeStatus::NoActorChange;
     let mut runtime_imports = RuntimeImports::default();
+    let mut custom_error_import = None;
     let mut custom_scalars = CustomScalarsImports::default();
     let mut input_object_types = Default::default();
     let mut imported_raw_response_types = Default::default();
@@ -113,23 +115,28 @@ pub(crate) fn write_operation_type_exports_section(
         &mut actor_change_status,
         &mut custom_scalars,
         &mut runtime_imports,
+        &mut custom_error_import,
         None,
         is_throw_on_field_error,
     );
+
+    let emit_optional_type = typegen_operation
+        .directives
+        .named(*CHILDREN_CAN_BUBBLE_METADATA_KEY)
+        .is_some();
 
     let data_type = get_data_type(
         typegen_context,
         type_selections.into_iter(),
         MaskStatus::Masked, // Queries are never unmasked
         None,
-        typegen_operation
-            .directives
-            .named(*CHILDREN_CAN_BUBBLE_METADATA_KEY)
-            .is_some(),
+        emit_optional_type,
         false, // Query types can never be plural
         &mut encountered_enums,
         &mut encountered_fragments,
         &mut custom_scalars,
+        &mut runtime_imports,
+        &mut custom_error_import,
     );
 
     let raw_response_type_and_match_fields =
@@ -178,7 +185,13 @@ pub(crate) fn write_operation_type_exports_section(
     write_import_actor_change_point(actor_change_status, writer)?;
     runtime_imports.write_runtime_imports(writer)?;
     write_fragment_imports(typegen_context, None, encountered_fragments, writer)?;
-    write_relay_resolver_imports(imported_resolvers, writer)?;
+    if custom_error_import.is_some() {
+        write_import_custom_type(custom_error_import, writer)?;
+    }
+    // TODO: Add proper support for Resolver type generation in typescript: https://github.com/facebook/relay/issues/4772
+    if typegen_context.project_config.typegen_config.language == TypegenLanguage::Flow {
+        write_relay_resolver_imports(imported_resolvers, writer)?;
+    }
     write_split_raw_response_type_imports(typegen_context, imported_raw_response_types, writer)?;
 
     let mut input_object_types = IndexMap::default();
@@ -349,6 +362,7 @@ pub(crate) fn write_fragment_type_exports_section(
         generic_fragment_type: true,
         ..Default::default()
     };
+    let mut custom_error_import: Option<CustomTypeImport> = None;
     let mut imported_raw_response_types = Default::default();
 
     let mut type_selections = visit_selections(
@@ -362,6 +376,7 @@ pub(crate) fn write_fragment_type_exports_section(
         &mut actor_change_status,
         &mut custom_scalars,
         &mut runtime_imports,
+        &mut custom_error_import,
         None,
         is_throw_on_field_error,
     );
@@ -429,6 +444,8 @@ pub(crate) fn write_fragment_type_exports_section(
         &mut encountered_enums,
         &mut encountered_fragments,
         &mut custom_scalars,
+        &mut runtime_imports,
+        &mut custom_error_import,
     );
 
     write_import_actor_change_point(actor_change_status, writer)?;
@@ -449,6 +466,7 @@ pub(crate) fn write_fragment_type_exports_section(
     write_custom_scalar_imports(custom_scalars, writer)?;
 
     runtime_imports.write_runtime_imports(writer)?;
+
     write_relay_resolver_imports(imported_resolvers, writer)?;
 
     let refetchable_metadata = RefetchableMetadata::find(&fragment_definition.directives);
@@ -487,6 +505,23 @@ pub(crate) fn write_fragment_type_exports_section(
     }
 
     Ok(())
+}
+
+fn write_import_custom_type(
+    custom_type_import: Option<CustomTypeImport>,
+    writer: &mut Box<dyn Writer>,
+) -> FmtResult {
+    match custom_type_import {
+        Some(custom_type_import) => {
+            let names = &[custom_type_import.name.lookup()];
+            let path = &custom_type_import.path.to_str();
+            match path {
+                Some(path) => writer.write_import_type(names, path),
+                _ => Ok(()),
+            }
+        }
+        _ => Ok(()),
+    }
 }
 
 fn write_fragment_imports(
@@ -582,6 +617,10 @@ fn write_relay_resolver_imports(
     writer: &mut Box<dyn Writer>,
 ) -> FmtResult {
     imported_resolvers.0.sort_keys();
+
+    // Context import will be the same for each resolver, so this flag is used to ensure it is only written once
+    let mut live_resolver_context_import_written = false;
+
     for resolver in imported_resolvers.0.values() {
         match resolver.resolver_name {
             ImportedResolverName::Default(name) => {
@@ -595,6 +634,17 @@ fn write_relay_resolver_imports(
                 )?;
             }
         }
+
+        if let Some(ref live_resolver_context_import) = resolver.context_import {
+            if !live_resolver_context_import_written {
+                writer.write_import_type(
+                    &[live_resolver_context_import.name.lookup()],
+                    live_resolver_context_import.import_path.lookup(),
+                )?;
+                live_resolver_context_import_written = true;
+            }
+        }
+
         if let AST::AssertFunctionType(_) = &resolver.resolver_type {
             writer.write(&resolver.resolver_type)?;
         }
@@ -770,14 +820,14 @@ fn write_input_object_types(
 /// The types of the validator:
 ///
 /// - For fragments whose type condition is abstract:
-/// ({ __id: string, __isFragmentName: ?string, $fragmentSpreads: FragmentRefType }) =>
-///   ({ __id: string, __isFragmentName: string, $fragmentSpreads: FragmentRefType })
-///   | false
+///   ({ __id: string, __isFragmentName: ?string, $fragmentSpreads: FragmentRefType }) =>
+///     ({ __id: string, __isFragmentName: string, $fragmentSpreads: FragmentRefType })
+///     | false
 ///
 /// - For fragments whose type condition is concrete:
-/// ({ __id: string, __typename: string, $fragmentSpreads: FragmentRefType }) =>
-///   ({ __id: string, __typename: FragmentType, $fragmentSpreads: FragmentRefType })
-///   | false
+///   ({ __id: string, __typename: string, $fragmentSpreads: FragmentRefType }) =>
+///     ({ __id: string, __typename: FragmentType, $fragmentSpreads: FragmentRefType })
+///     | false
 ///
 /// Validators' runtime behavior checks for the presence of the __isFragmentName marker
 /// (for abstract fragment types) or a matching concrete type (for concrete fragment

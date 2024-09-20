@@ -120,7 +120,7 @@ pub enum ValidationMessage {
     UndefinedFragment(FragmentDefinitionName),
 
     #[error(
-        "Each field on a given type can have only a single @module directive, but here there is more than one (perhaps within different spreads). To fix it, put each @module directive into its own aliased copy of the field with different aliases."
+        "Each selection can have only a single @module directive, but here there is more than one (perhaps within different inline fragments). To fix it, add an @alias to one of the @module fragments or put each @module fragment into its own aliased copy of the parent field."
     )]
     ConflictingModuleSelections,
 
@@ -138,12 +138,6 @@ pub enum ValidationMessage {
     },
     #[error("Invalid directive combination. @alias may not be combined with other directives.")]
     FragmentAliasIncompatibleDirective,
-
-    #[error("Unexpected directive @catch. @catch is not yet implemented.")]
-    CatchDirectiveNotImplemented,
-
-    #[error("Unexpected directive `@alias`. `@alias` is not currently enabled in this location.")]
-    FragmentAliasDirectiveDisabled,
 
     #[error(
         "Unexpected `@alias` on spread of plural fragment. @alias may not be used on fragments marked as `@relay(plural: true)`."

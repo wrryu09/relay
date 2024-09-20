@@ -11,10 +11,12 @@ use common::ScalarName;
 use fnv::FnvBuildHasher;
 use indexmap::IndexMap;
 use intern::string_key::StringKey;
+use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
 use strum::EnumIter;
 use strum::IntoEnumIterator;
+
 type FnvIndexMap<K, V> = IndexMap<K, V, FnvBuildHasher>;
 
 #[derive(
@@ -25,7 +27,8 @@ type FnvIndexMap<K, V> = IndexMap<K, V, FnvBuildHasher>;
     Clone,
     Serialize,
     Deserialize,
-    PartialEq
+    PartialEq,
+    JsonSchema
 )]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub enum TypegenLanguage {
@@ -44,21 +47,45 @@ impl TypegenLanguage {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, Hash, PartialEq, Eq)]
 #[serde(untagged)]
-pub enum CustomScalarType {
+pub enum CustomType {
     Name(StringKey),
-    Path(CustomScalarTypeImport),
+    Path(CustomTypeImport),
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-
-pub struct CustomScalarTypeImport {
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema, Hash, PartialEq, Eq)]
+pub struct CustomTypeImport {
     pub name: StringKey,
     pub path: PathBuf,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+#[serde(untagged)]
+pub enum ResolverContextTypeInput {
+    Path(ResolverContextTypeInputPath),
+    Package(ResolverContextTypeInputPackage),
+}
+
+/// Specifies how Relay can import the Resolver context type from a path
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+pub struct ResolverContextTypeInputPath {
+    /// The name under which the type is exported from the module
+    pub name: StringKey,
+    /// The path to the module relative to the project root
+    pub path: PathBuf,
+}
+
+/// Specifies how Relay can import the Resolver context type from a named package
+#[derive(Debug, Serialize, Deserialize, Clone, JsonSchema)]
+pub struct ResolverContextTypeInputPackage {
+    /// The name under which the type is exported from the package
+    pub name: StringKey,
+    /// The name of the package
+    pub package: StringKey,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct TypegenConfig {
     /// The desired output language, "flow" or "typescript".
@@ -88,7 +115,7 @@ pub struct TypegenConfig {
     /// { "Url": "String" }
     /// { "Url": {"name:: "MyURL", "path": "../src/MyUrlTypes"} }
     #[serde(default)]
-    pub custom_scalar_types: FnvIndexMap<ScalarName, CustomScalarType>,
+    pub custom_scalar_types: FnvIndexMap<ScalarName, CustomType>,
 
     /// Require all GraphQL scalar types mapping to be defined, will throw
     /// if a GraphQL scalar type doesn't have a JS type
@@ -112,17 +139,13 @@ pub struct TypegenConfig {
     #[serde(default)]
     pub typescript_exclude_undefined_from_nullable_union: bool,
 
-    /// EXPERIMENTAL: If your environment is configured to handles errors out of band, either via
-    /// a network layer which discards responses with errors, or via enabling strict
-    /// error handling in the runtime, you can enable this flag to have Relay generate
-    /// non-null types for fields which are marked as semantically non-null in
-    /// the schema.
-    ///
-    /// Currently semantically non-null fields must be specified in your schema
-    /// using the `@semanticNonNull` directive as specified in:
-    /// https://github.com/apollographql/specs/pull/42
+    /// A map from GraphQL error name to import path, example:
+    /// {"name:: "MyErrorName", "path": "../src/MyError"}
+    pub custom_error_type: Option<CustomTypeImport>,
+
+    /// Indicates the type to import and use as the context for live resolvers.
     #[serde(default)]
-    pub experimental_emit_semantic_nullability_types: bool,
+    pub resolver_context_type: Option<ResolverContextTypeInput>,
 }
 
 impl Default for TypegenConfig {
@@ -137,7 +160,8 @@ impl Default for TypegenConfig {
             no_future_proof_enums: Default::default(),
             eager_es_modules: Default::default(),
             typescript_exclude_undefined_from_nullable_union: Default::default(),
-            experimental_emit_semantic_nullability_types: Default::default(),
+            custom_error_type: None,
+            resolver_context_type: Default::default(),
         }
     }
 }

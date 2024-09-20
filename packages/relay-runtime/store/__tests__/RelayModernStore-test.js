@@ -686,6 +686,7 @@ function cloneEventWithSets(event: LogEvent) {
           missingRequiredFields: null,
           missingClientEdges: null,
           isMissingData: false,
+          errorResponseFields: null,
           data: {
             name: 'Zuck',
             profilePicture: {
@@ -727,6 +728,18 @@ function cloneEventWithSets(event: LogEvent) {
             name: 'Joe',
             profilePicture: undefined,
           },
+          errorResponseFields: [
+            {
+              owner: 'RelayModernStoreTest5Fragment',
+              kind: 'missing_expected_data.log',
+              fieldPath: '',
+            },
+            {
+              owner: 'RelayModernStoreTest5Fragment',
+              kind: 'missing_expected_data.log',
+              fieldPath: '',
+            },
+          ],
           missingRequiredFields: null,
           missingLiveResolverFields: [],
           missingClientEdges: null,
@@ -771,6 +784,18 @@ function cloneEventWithSets(event: LogEvent) {
           missingRequiredFields: null,
           missingClientEdges: null,
           isMissingData: true,
+          errorResponseFields: [
+            {
+              owner: 'RelayModernStoreTest5Fragment',
+              kind: 'missing_expected_data.log',
+              fieldPath: '',
+            },
+            {
+              owner: 'RelayModernStoreTest5Fragment',
+              kind: 'missing_expected_data.log',
+              fieldPath: '',
+            },
+          ],
           seenRecords: new Set(['842472']),
         });
       });
@@ -992,6 +1017,11 @@ function cloneEventWithSets(event: LogEvent) {
           owner.request,
         );
         const snapshot = store.lookup(selector);
+        expect(logEvents).toMatchObject([
+          {name: 'store.lookup.start'},
+          {name: 'store.lookup.end'},
+        ]);
+        logEvents.length = 0;
         const callback = jest.fn((nextSnapshot: Snapshot) => {
           logEvents.push({
             kind: 'test_only_callback',
@@ -1032,6 +1062,8 @@ function cloneEventWithSets(event: LogEvent) {
             name: 'store.notify.complete',
             updatedRecordIDs: new Set(['client:1']),
             invalidatedRecordIDs: new Set(),
+            updatedOwners: [owner.request],
+            subscriptionsSize: 1,
           },
         ]);
         expect(callback).toBeCalledTimes(1);
@@ -1055,6 +1087,11 @@ function cloneEventWithSets(event: LogEvent) {
             owner.request,
           );
           const snapshot = store.lookup(selector);
+          expect(logEvents).toMatchObject([
+            {name: 'store.lookup.start'},
+            {name: 'store.lookup.end'},
+          ]);
+          logEvents.length = 0;
           const callback = jest.fn((nextSnapshot: Snapshot) => {
             logEvents.push({
               kind: 'test_only_callback',
@@ -1117,6 +1154,8 @@ function cloneEventWithSets(event: LogEvent) {
               sourceOperation: owner,
               updatedRecordIDs: new Set(['client:1']),
               invalidatedRecordIDs: new Set(),
+              updatedOwners: [owner.request],
+              subscriptionsSize: 1,
             },
           ]);
           expect(callback).toBeCalledTimes(1);
@@ -2307,6 +2346,7 @@ function cloneEventWithSets(event: LogEvent) {
       function runNextScheduledJob() {
         const job = schedulerQueue.shift();
         expect(job).toBeDefined();
+        // $FlowFixMe[not-a-function]
         job();
       }
 

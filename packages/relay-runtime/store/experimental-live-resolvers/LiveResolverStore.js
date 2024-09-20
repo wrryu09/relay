@@ -25,6 +25,7 @@ import type {
   OperationLoader,
   RecordSource,
   RequestDescriptor,
+  ResolverContext,
   Scheduler,
   SingularReaderSelector,
   Snapshot,
@@ -111,6 +112,7 @@ class LiveResolverStore implements Store {
   _actorIdentifier: ?ActorIdentifier;
   _treatMissingFieldsAsNull: boolean;
   _shouldProcessClientComponents: boolean;
+  _resolverContext: ?ResolverContext;
 
   constructor(
     source: MutableRecordSource,
@@ -124,6 +126,7 @@ class LiveResolverStore implements Store {
       queryCacheExpirationTime?: ?number,
       shouldProcessClientComponents?: ?boolean,
       treatMissingFieldsAsNull?: ?boolean,
+      resolverContext?: ResolverContext,
     },
   ) {
     // Prevent mutation of a record from outside the store.
@@ -167,12 +170,17 @@ class LiveResolverStore implements Store {
     this._actorIdentifier = options?.actorIdentifier;
     this._shouldProcessClientComponents =
       options?.shouldProcessClientComponents ?? false;
+    this._resolverContext = options?.resolverContext;
 
     initializeRecordSource(this._recordSource);
   }
 
   getSource(): RecordSource {
     return this._optimisticSource ?? this._recordSource;
+  }
+
+  getOperationLoader(): ?OperationLoader {
+    return this._operationLoader;
   }
 
   _getMutableRecordSource(): MutableRecordSource {
@@ -265,6 +273,7 @@ class LiveResolverStore implements Store {
       this._operationLoader,
       this._getDataID,
       this._shouldProcessClientComponents,
+      this.__log,
     );
 
     return getAvailabilityStatus(
@@ -311,6 +320,7 @@ class LiveResolverStore implements Store {
           // buffer have a refCount of 0.
           if (this._releaseBuffer.length > this._gcReleaseBufferSize) {
             const _id = this._releaseBuffer.shift();
+            // $FlowFixMe[incompatible-call]
             this._roots.delete(_id);
             this.scheduleGC();
           }
@@ -342,12 +352,29 @@ class LiveResolverStore implements Store {
   }
 
   lookup(selector: SingularReaderSelector): Snapshot {
+    const log = this.__log;
+    if (log != null) {
+      log({
+        name: 'store.lookup.start',
+        selector,
+      });
+    }
     const source = this.getSource();
-    const snapshot = RelayReader.read(source, selector, this._resolverCache);
+    const snapshot = RelayReader.read(
+      source,
+      selector,
+      this._resolverCache,
+      this._resolverContext,
+    );
     if (__DEV__) {
       deepFreeze(snapshot);
     }
-
+    if (log != null) {
+      log({
+        name: 'store.lookup.end',
+        selector,
+      });
+    }
     return snapshot;
   }
 
@@ -392,17 +419,6 @@ class LiveResolverStore implements Store {
         invalidateStore === true,
       );
     });
-    if (log != null) {
-      log({
-        name: 'store.notify.complete',
-        sourceOperation,
-        updatedRecordIDs: this._updatedRecordIDs,
-        invalidatedRecordIDs: this._invalidatedRecordIDs,
-      });
-    }
-
-    this._updatedRecordIDs.clear();
-    this._invalidatedRecordIDs.clear();
 
     // If a source operation was provided (indicating the operation
     // that produced this update to the store), record the current epoch
@@ -435,6 +451,20 @@ class LiveResolverStore implements Store {
         this._roots.set(id, temporaryRootEntry);
       }
     }
+
+    if (log != null) {
+      log({
+        name: 'store.notify.complete',
+        sourceOperation,
+        updatedRecordIDs: this._updatedRecordIDs,
+        invalidatedRecordIDs: this._invalidatedRecordIDs,
+        subscriptionsSize: this._storeSubscriptions.size(),
+        updatedOwners,
+      });
+    }
+
+    this._updatedRecordIDs.clear();
+    this._invalidatedRecordIDs.clear();
 
     return updatedOwners;
   }
@@ -667,7 +697,13 @@ class LiveResolverStore implements Store {
 
   *_collect(): Generator<void, void, void> {
     /* eslint-disable no-labels */
+    const log = this.__log;
     top: while (true) {
+      if (log != null) {
+        log({
+          name: 'store.gc.start',
+        });
+      }
       const startEpoch = this._currentWriteEpoch;
       const references = new Set<DataID>();
 
@@ -686,16 +722,13 @@ class LiveResolverStore implements Store {
 
         // If the store was updated, restart
         if (startEpoch !== this._currentWriteEpoch) {
+          if (log != null) {
+            log({
+              name: 'store.gc.interrupted',
+            });
+          }
           continue top;
         }
-      }
-
-      const log = this.__log;
-      if (log != null) {
-        log({
-          name: 'store.gc',
-          references,
-        });
       }
 
       // Sweep records without references
@@ -722,6 +755,12 @@ class LiveResolverStore implements Store {
             this._recordSource.remove(dataID);
           }
         }
+      }
+      if (log != null) {
+        log({
+          name: 'store.gc.end',
+          references,
+        });
       }
       return;
     }
